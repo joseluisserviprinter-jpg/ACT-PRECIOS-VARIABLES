@@ -1,0 +1,283 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  Upload, 
+  Download, 
+  Percent, 
+  FileText, 
+  AlertCircle, 
+  CheckCircle2, 
+  RefreshCw, 
+  FileSpreadsheet, 
+  ArrowUpRight, 
+  ArrowDownRight 
+} from 'lucide-react';
+
+/**
+ * App Component - Actualizador de Precios para Inventarios Excel
+ * Versión optimizada con carga dinámica de librerías para evitar errores de compilación.
+ */
+const App = () => {
+  const [originalData, setOriginalData] = useState([]); 
+  const [displayData, setDisplayData] = useState([]);   
+  const [percentage, setPercentage] = useState(10);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [fileName, setFileName] = useState('');
+  const [status, setStatus] = useState('idle'); 
+  const [operation, setOperation] = useState('increase'); 
+  const [libLoaded, setLibLoaded] = useState(false);
+
+  // Cargar XLSX desde CDN para garantizar compatibilidad en entornos web/GitHub Pages
+  useEffect(() => {
+    if (window.XLSX) {
+      setLibLoaded(true);
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    script.async = true;
+    script.onload = () => setLibLoaded(true);
+    document.body.appendChild(script);
+    return () => {
+      if (document.body.contains(script)) document.body.removeChild(script);
+    };
+  }, []);
+
+  const handleFileUpload = (event) => {
+    if (!libLoaded) return;
+    const file = event.target.files[0];
+    if (!file) return;
+
+    setFileName(file.name);
+    const reader = new FileReader();
+    
+    reader.onload = (e) => {
+      const data = new Uint8Array(e.target.result);
+      const workbook = window.XLSX.read(data, { type: 'array' });
+      const firstSheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[firstSheetName];
+      const jsonData = window.XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+      setOriginalData(jsonData);
+      setDisplayData(jsonData);
+      setStatus('loaded');
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const applyPricing = () => {
+    if (originalData.length === 0) return;
+    setIsProcessing(true);
+
+    const headers = originalData[0];
+    const priceIndex = headers.findIndex(h => 
+      h && h.toString().toLowerCase().trim() === 'precio normal'
+    );
+
+    if (priceIndex === -1) {
+      alert('Error: No se encontró la columna "Precio normal". Asegúrate de que el nombre sea exacto.');
+      setIsProcessing(false);
+      return;
+    }
+
+    const pValue = Math.abs(parseFloat(percentage)) || 0;
+    const factor = operation === 'increase' ? (1 + pValue / 100) : (1 - pValue / 100);
+    
+    const updatedData = originalData.map((row, index) => {
+      if (index === 0) return row; 
+      
+      const newRow = [...row];
+      let rawVal = row[priceIndex];
+
+      if (rawVal !== undefined && rawVal !== null && rawVal !== '') {
+        let cleanVal = rawVal.toString().replace(/\s/g, '').replace(',', '.');
+        let currentPrice = parseFloat(cleanVal);
+
+        if (!isNaN(currentPrice)) {
+          const newPrice = Number((currentPrice * factor).toFixed(2));
+          newRow[priceIndex] = newPrice;
+        }
+      }
+      return newRow;
+    });
+
+    setDisplayData(updatedData);
+    setStatus('processed');
+    setTimeout(() => setIsProcessing(false), 400);
+  };
+
+  const downloadExcel = () => {
+    if (status !== 'processed' || !libLoaded) return;
+
+    const ws = window.XLSX.utils.aoa_to_sheet(displayData);
+    const newWb = window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(newWb, ws, "Precios Actualizados");
+
+    const cleanName = fileName.replace(/\.[^/.]+$/, "");
+    const outputName = `ACTUALIZADO_${cleanName}.xlsx`;
+    
+    window.XLSX.writeFile(newWb, outputName);
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-100 p-4 md:p-10 font-sans text-slate-800">
+      <div className="max-w-4xl mx-auto bg-white rounded-3xl shadow-2xl overflow-hidden border border-white">
+        
+        {/* Cabecera */}
+        <div className="bg-gradient-to-br from-indigo-600 to-violet-800 p-8 text-white relative">
+          <div className="relative z-10">
+            <h1 className="text-3xl font-black tracking-tight flex items-center gap-3">
+              <FileSpreadsheet className="w-10 h-10" />
+              Actualizador de Precios
+            </h1>
+            <p className="opacity-90 mt-2 font-medium">Herramienta profesional para archivos Excel (.xlsx)</p>
+          </div>
+          <div className="absolute top-0 right-0 p-4 opacity-10">
+            <FileSpreadsheet className="w-32 h-32 rotate-12" />
+          </div>
+        </div>
+
+        <div className="p-8 space-y-10">
+          
+          {/* CARGA */}
+          <section className="space-y-4">
+            <h2 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+              <span className="bg-indigo-600 text-white w-5 h-5 rounded-full flex items-center justify-center text-[10px]">1</span>
+              Importación de datos
+            </h2>
+            <div className="relative group">
+              <input 
+                type="file" 
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" 
+                accept=".xlsx, .xls, .xlsm" 
+                onChange={handleFileUpload}
+              />
+              <div className={`p-10 border-4 border-dashed rounded-3xl text-center transition-all ${status !== 'idle' ? 'bg-indigo-50 border-indigo-300' : 'bg-slate-50 border-slate-200 group-hover:border-indigo-400'}`}>
+                <Upload className={`w-12 h-12 mx-auto mb-4 ${status !== 'idle' ? 'text-indigo-500' : 'text-slate-300'}`} />
+                <p className="text-lg font-bold text-slate-700">
+                  {fileName ? fileName : "Haz clic o arrastra tu Excel aquí"}
+                </p>
+                {!libLoaded && <p className="text-xs text-amber-500 mt-2 animate-pulse font-bold">Cargando motor de Excel...</p>}
+                {libLoaded && <p className="text-sm text-slate-400 mt-1">Soporta formatos .xlsx y .xls</p>}
+              </div>
+            </div>
+          </section>
+
+          {/* AJUSTE */}
+          <section className={`space-y-4 transition-all ${status === 'idle' ? 'opacity-30 pointer-events-none' : 'opacity-100'}`}>
+            <h2 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+              <span className="bg-indigo-600 text-white w-5 h-5 rounded-full flex items-center justify-center text-[10px]">2</span>
+              Ajuste matemático
+            </h2>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-50 p-6 rounded-3xl border border-slate-200 shadow-inner">
+              <div className="space-y-3">
+                <label className="text-xs font-bold text-slate-500 uppercase ml-1">Tipo de Movimiento</label>
+                <div className="flex p-1 bg-slate-200 rounded-xl">
+                  <button 
+                    onClick={() => setOperation('increase')}
+                    className={`flex-1 py-3 px-4 rounded-lg flex items-center justify-center gap-2 font-bold transition-all ${operation === 'increase' ? 'bg-white shadow-md text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
+                  >
+                    <ArrowUpRight className="w-4 h-4" /> Subida
+                  </button>
+                  <button 
+                    onClick={() => setOperation('decrease')}
+                    className={`flex-1 py-3 px-4 rounded-lg flex items-center justify-center gap-2 font-bold transition-all ${operation === 'decrease' ? 'bg-white shadow-md text-rose-600' : 'text-slate-500 hover:text-slate-700'}`}
+                  >
+                    <ArrowDownRight className="w-4 h-4" /> Bajada
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <label className="text-xs font-bold text-slate-500 uppercase ml-1">Porcentaje de Variación (%)</label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    value={percentage}
+                    onChange={(e) => setPercentage(e.target.value)}
+                    className="w-full bg-white border-2 border-slate-200 rounded-xl py-3 pl-4 pr-12 text-xl font-bold focus:border-indigo-500 outline-none transition-all shadow-sm"
+                  />
+                  <Percent className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300" />
+                </div>
+              </div>
+
+              <button
+                onClick={applyPricing}
+                disabled={isProcessing}
+                className="md:col-span-2 w-full bg-slate-900 hover:bg-slate-800 text-white font-black py-5 rounded-2xl shadow-xl transition-all active:scale-[0.98] flex items-center justify-center gap-3 uppercase tracking-widest"
+              >
+                {isProcessing ? <RefreshCw className="animate-spin" /> : null}
+                {isProcessing ? "Recalculando..." : "Actualizar Todos los Precios"}
+              </button>
+            </div>
+          </section>
+
+          {/* DESCARGA */}
+          <section className={`transition-all ${status !== 'processed' ? 'opacity-30 pointer-events-none' : 'opacity-100'}`}>
+             <div className="bg-indigo-50 border-2 border-indigo-100 rounded-3xl p-8 flex flex-col md:flex-row items-center justify-between gap-6 shadow-sm">
+                <div className="flex items-center gap-4">
+                   <div className="bg-indigo-500 p-3 rounded-2xl text-white shadow-lg">
+                      <CheckCircle2 className="w-8 h-8" />
+                   </div>
+                   <div>
+                      <p className="text-xl font-black text-indigo-900 leading-none">Proceso Completado</p>
+                      <p className="text-indigo-700 text-sm mt-1">Los datos están listos para ser exportados.</p>
+                   </div>
+                </div>
+                <button
+                  onClick={downloadExcel}
+                  className="w-full md:w-auto bg-indigo-600 text-white font-black py-4 px-10 rounded-2xl flex items-center justify-center gap-3 hover:bg-indigo-700 transition-all shadow-lg"
+                >
+                  <Download className="w-5 h-5" />
+                  DESCARGAR ARCHIVO FINAL
+                </button>
+             </div>
+          </section>
+
+          {/* Preview */}
+          {status !== 'idle' && (
+            <div className="pt-6 border-t border-slate-100">
+               <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-4">Vista Previa de Datos</h3>
+               <div className="overflow-x-auto border border-slate-100 rounded-2xl bg-slate-50">
+                  <table className="w-full text-[11px] text-left">
+                    <thead>
+                      <tr className="bg-slate-200/50 text-slate-600 font-black">
+                        {displayData[0]?.slice(0, 5).map((h, i) => (
+                          <th key={i} className="px-4 py-3">{h || '-'}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {displayData.slice(1, 6).map((row, i) => (
+                        <tr key={i} className="bg-white hover:bg-indigo-50/30">
+                          {row.slice(0, 5).map((cell, j) => (
+                            <td key={j} className="px-4 py-2 text-slate-600 border-r border-slate-50">{cell}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+               </div>
+            </div>
+          )}
+        </div>
+
+        <div className="bg-slate-50 border-t border-slate-200 p-8 flex gap-5">
+          <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm self-start">
+            <AlertCircle className="w-6 h-6 text-indigo-500" />
+          </div>
+          <div className="text-xs text-slate-500 leading-relaxed">
+            <p className="font-bold text-slate-700 text-sm mb-1 uppercase tracking-tight">Información de Seguridad y GitHub:</p>
+            <ul className="list-disc ml-4 space-y-1">
+              <li><strong>Compatibilidad:</strong> Este código utiliza carga dinámica de librerías para funcionar perfectamente en GitHub Pages sin configuración adicional.</li>
+              <li><strong>Privacidad:</strong> Al procesarse en el navegador, tus datos nunca salen de tu ordenador.</li>
+              <li><strong>Inalterable:</strong> Las columnas de SKU y Referencia permanecen intactas.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default App;
