@@ -1,345 +1,253 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  Upload, 
-  Download, 
-  Percent, 
-  FileText, 
-  AlertCircle, 
-  CheckCircle2, 
-  RefreshCw, 
-  FileSpreadsheet, 
-  ArrowUpRight, 
-  ArrowDownRight,
-  Search
-} from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Upload, Download, Percent, FileText, AlertCircle, CheckCircle2, RefreshCw, FileSpreadsheet, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 
-/**
- * App Component - Actualizador de Precios Pro v3.2 (GitHub Ready)
- * Esta versión utiliza carga por CDN y manejo de estados globales para asegurar
- * compatibilidad en entornos de despliegue como GitHub Pages.
- */
 const App = () => {
-  const [originalData, setOriginalData] = useState([]); 
-  const [displayData, setDisplayData] = useState([]);   
+  const [originalData, setOriginalData] = useState([]); // Base de datos original intacta
+  const [displayData, setDisplayData] = useState([]);   // Datos procesados para vista/descarga
   const [percentage, setPercentage] = useState(10);
   const [isProcessing, setIsProcessing] = useState(false);
   const [fileName, setFileName] = useState('');
-  const [status, setStatus] = useState('idle'); 
-  const [operation, setOperation] = useState('increase'); 
+  const [status, setStatus] = useState('idle');
   const [libLoaded, setLibLoaded] = useState(false);
-  const [error, setError] = useState(null);
-  
-  // Metadatos de la detección de columnas
-  const [detection, setDetection] = useState({ colIndex: -1, rowIndex: -1, colName: '' });
+  const [operation, setOperation] = useState('increase'); // 'increase' o 'decrease'
 
-  // Carga dinámica de la librería XLSX para evitar errores de 'Module not found' en GitHub/Vite
   useEffect(() => {
-    const scriptId = 'xlsx-cdn-script';
-    
-    // Si ya existe la librería en el objeto window, marcamos como cargado
-    if (window.XLSX) {
-      setLibLoaded(true);
-      return;
-    }
-
     const script = document.createElement('script');
-    script.id = scriptId;
-    script.src = "https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js";
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
     script.async = true;
-    script.onload = () => {
-      console.log('XLSX Library loaded successfully from CDN');
-      setLibLoaded(true);
-    };
-    script.onerror = () => {
-      setError('No se pudo cargar el motor de Excel. Verifica tu conexión.');
-    };
+    script.onload = () => setLibLoaded(true);
     document.body.appendChild(script);
+    return () => {
+      if (document.body.contains(script)) document.body.removeChild(script);
+    };
   }, []);
 
-  // Función para identificar la cabecera y la columna de precios
-  const findHeaderInfo = (rows) => {
-    // Escaneamos hasta las primeras 30 filas (útil para exports con basura al inicio)
-    for (let r = 0; r < Math.min(rows.length, 30); r++) {
-      const row = rows[r];
-      if (!row || !Array.isArray(row)) continue;
-      
-      const colIndex = row.findIndex(cell => {
-        if (!cell) return false;
-        const text = cell.toString().toLowerCase().trim();
-        // Buscamos coincidencias comunes en archivos de inventario
-        return text === 'precio normal' || 
-               text === 'regular_price' || 
-               text === 'precio' || 
-               text.includes('precio normal');
-      });
-      
-      if (colIndex !== -1) {
-        return { rowIndex: r, colIndex, colName: row[colIndex] };
-      }
-    }
-    return { rowIndex: -1, colIndex: -1, colName: '' };
-  };
-
   const handleFileUpload = (event) => {
-    if (!libLoaded) {
-      alert('El motor de Excel aún se está cargando...');
-      return;
-    }
-    
+    if (!libLoaded) return;
     const file = event.target.files[0];
     if (!file) return;
 
     setFileName(file.name);
-    setStatus('loading');
     const reader = new FileReader();
-    
     reader.onload = (e) => {
-      try {
-        const data = new Uint8Array(e.target.result);
-        const workbook = window.XLSX.read(data, { type: 'array' });
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
-        
-        // Extraemos todos los datos (header: 1 devuelve matriz de matrices)
-        const jsonData = window.XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+      const bstr = e.target.result;
+      const wb = window.XLSX.read(bstr, { type: 'binary' });
+      const firstSheetName = wb.SheetNames[0];
+      const worksheet = wb.Sheets[firstSheetName];
+      const jsonData = window.XLSX.utils.sheet_to_json(worksheet, { header: 1 });
 
-        if (jsonData.length === 0) {
-          throw new Error('El archivo está vacío.');
-        }
-
-        const info = findHeaderInfo(jsonData);
-        setDetection(info);
-        setOriginalData(jsonData);
-        setDisplayData(jsonData);
-        setStatus('loaded');
-        setError(null);
-        
-        if (info.colIndex === -1) {
-          setError('No se ha encontrado la columna "Precio normal". El cálculo no funcionará.');
-        }
-      } catch (err) {
-        setError('Error al procesar el archivo Excel. Prueba con un formato .xlsx estándar.');
-        setStatus('idle');
-      }
+      setOriginalData(jsonData);
+      setDisplayData(jsonData);
+      setStatus('loaded');
     };
-    reader.readAsArrayBuffer(file);
+    reader.readAsBinaryString(file);
   };
 
   const applyPricing = () => {
-    if (originalData.length === 0 || detection.colIndex === -1) return;
-    
+    if (originalData.length === 0) return;
     setIsProcessing(true);
+
+    const headers = originalData[0];
+    const priceIndex = headers.findIndex(h => 
+      h && h.toString().toLowerCase().trim() === 'precio normal'
+    );
+
+    if (priceIndex === -1) {
+      alert('Error: No se encontró la columna "Precio normal" en la cabecera del archivo.');
+      setIsProcessing(false);
+      return;
+    }
+
+    // Calculamos el factor: 1.10 para +10% o 0.90 para -10%
     const pValue = Math.abs(parseFloat(percentage)) || 0;
     const factor = operation === 'increase' ? (1 + pValue / 100) : (1 - pValue / 100);
     
+    // Siempre operamos sobre ORIGINAL_DATA para que sea preciso
     const updatedData = originalData.map((row, index) => {
-      // Ignoramos la cabecera y todo lo que esté por encima
-      if (index <= detection.rowIndex) return row; 
+      if (index === 0) return row; // Encabezados
       
       const newRow = [...row];
-      let rawVal = row[detection.colIndex];
+      let rawVal = row[priceIndex];
 
       if (rawVal !== undefined && rawVal !== null && rawVal !== '') {
-        // Limpiamos formatos de texto comunes
-        let cleanVal = rawVal.toString().replace(/[€$£\s]/g, '').replace(',', '.');
+        // Normalización agresiva del número (manejo de comas europeas y espacios)
+        let cleanVal = rawVal.toString().replace(/\s/g, '').replace(',', '.');
         let currentPrice = parseFloat(cleanVal);
 
         if (!isNaN(currentPrice)) {
           const newPrice = Number((currentPrice * factor).toFixed(2));
-          newRow[detection.colIndex] = newPrice;
+          newRow[priceIndex] = newPrice;
         }
       }
       return newRow;
     });
 
-    setTimeout(() => {
-      setDisplayData(updatedData);
-      setStatus('processed');
-      setIsProcessing(false);
-    }, 500);
+    setDisplayData(updatedData);
+    setStatus('processed');
+    setTimeout(() => setIsProcessing(false), 300);
   };
 
   const downloadExcel = () => {
-    if (status !== 'processed' || !window.XLSX) return;
+    if (!libLoaded || status !== 'processed') return;
 
     const ws = window.XLSX.utils.aoa_to_sheet(displayData);
     const newWb = window.XLSX.utils.book_new();
     window.XLSX.utils.book_append_sheet(newWb, ws, "Precios Actualizados");
 
-    const cleanName = fileName.replace(/\.[^/.]+$/, "");
-    window.XLSX.writeFile(newWb, `LISTO_${cleanName}.xlsx`);
+    const outputName = `PRECIOS_ACTUALIZADOS_${fileName.replace(/\.[^/.]+$/, "")}.xlsx`;
+    window.XLSX.writeFile(newWb, outputName);
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 p-4 md:p-8 font-sans text-slate-800">
+    <div className="min-h-screen bg-slate-100 p-4 md:p-10 font-sans text-slate-800">
       <div className="max-w-4xl mx-auto bg-white rounded-3xl shadow-2xl overflow-hidden border border-white">
         
-        {/* Cabecera Estilo App */}
-        <div className={`p-8 text-white relative transition-all duration-500 ${status === 'processed' ? 'bg-teal-600' : 'bg-slate-900'}`}>
-          <div className="relative z-10">
-            <h1 className="text-3xl font-black tracking-tight flex items-center gap-3">
-              <FileSpreadsheet className="w-9 h-9" />
-              Actualizador Pro
-            </h1>
-            <p className="opacity-70 mt-1 text-sm">Procesamiento de inventarios compatible con GitHub</p>
-          </div>
-          <div className="absolute top-0 right-0 p-8 opacity-10 pointer-events-none">
-            <RefreshCw className={`w-32 h-32 ${isProcessing ? 'animate-spin' : ''}`} />
+        {/* Banner Superior */}
+        <div className="bg-gradient-to-r from-emerald-600 to-teal-700 p-8 text-white">
+          <div className="flex justify-between items-start">
+            <div>
+              <h1 className="text-3xl font-black tracking-tight flex items-center gap-3">
+                <FileSpreadsheet className="w-10 h-10" />
+                Actualizador Pro v2
+              </h1>
+              <p className="opacity-90 mt-2 font-medium">Corrección de precisión para columnas de "Precio normal"</p>
+            </div>
+            <div className="hidden md:block bg-white/10 backdrop-blur-md p-3 rounded-2xl border border-white/20">
+              <RefreshCw className={`w-6 h-6 ${isProcessing ? 'animate-spin' : ''}`} />
+            </div>
           </div>
         </div>
 
-        <div className="p-8 space-y-8">
+        <div className="p-8 space-y-10">
           
-          {/* Error Alert */}
-          {error && (
-            <div className="bg-rose-50 border-2 border-rose-100 text-rose-600 p-4 rounded-2xl flex items-center gap-3 text-sm font-bold animate-bounce">
-              <AlertCircle className="w-5 h-5 shrink-0" />
-              {error}
-            </div>
-          )}
-
-          {/* Paso 1: Importar */}
+          {/* PASO 1: CARGA */}
           <section className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
-                <span className="bg-slate-200 text-slate-600 w-5 h-5 rounded-full flex items-center justify-center">1</span>
-                Importación Excel
-              </h2>
-              {libLoaded && <span className="text-[9px] bg-emerald-100 text-emerald-600 px-2 py-1 rounded-md font-bold uppercase">Motor Activo</span>}
-            </div>
-            
+            <h2 className="text-lg font-bold flex items-center gap-2 text-slate-500 uppercase tracking-widest">
+              <span className="bg-emerald-600 text-white w-6 h-6 rounded-full flex items-center justify-center text-xs">1</span>
+              Importar Excel
+            </h2>
             <div className="relative group">
               <input 
                 type="file" 
-                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10 disabled:cursor-wait" 
-                accept=".xlsx, .xls, .xlsm, .csv" 
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" 
+                accept=".xlsx, .xls, .xlsm" 
                 onChange={handleFileUpload}
-                disabled={!libLoaded}
               />
-              <div className={`p-10 border-4 border-dashed rounded-3xl text-center transition-all ${status !== 'idle' && status !== 'loading' ? 'bg-indigo-50 border-indigo-200' : 'bg-slate-50 border-slate-200 group-hover:border-indigo-400'}`}>
-                <Upload className={`w-12 h-12 mx-auto mb-4 ${status !== 'idle' ? 'text-indigo-500' : 'text-slate-300'}`} />
+              <div className={`p-10 border-4 border-dashed rounded-3xl text-center transition-all ${status !== 'idle' ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-slate-200 group-hover:border-emerald-400 group-hover:bg-white'}`}>
+                <Upload className={`w-12 h-12 mx-auto mb-4 ${status !== 'idle' ? 'text-emerald-500' : 'text-slate-300'}`} />
                 <p className="text-lg font-bold text-slate-700">
-                  {fileName ? fileName : "Sube el archivo que quieres modificar"}
+                  {fileName ? fileName : "Arrastra tu archivo aquí"}
                 </p>
-                {status === 'loaded' && detection.colIndex !== -1 && (
-                  <p className="text-emerald-600 text-xs mt-2 font-bold flex items-center justify-center gap-1">
-                    <CheckCircle2 className="w-3 h-3" /> Columna detectada: "{detection.colName}"
-                  </p>
-                )}
+                <p className="text-sm text-slate-400 mt-1">Soporta .xlsx nativo</p>
               </div>
             </div>
           </section>
 
-          {/* Paso 2: Cálculo */}
-          <section className={`space-y-4 transition-all duration-500 ${status === 'idle' || status === 'loading' ? 'opacity-20 pointer-events-none' : 'opacity-100'}`}>
-            <h2 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
-              <span className="bg-slate-200 text-slate-600 w-5 h-5 rounded-full flex items-center justify-center">2</span>
-              Configurar Cambio
+          {/* PASO 2: CÁLCULO */}
+          <section className={`space-y-4 transition-all ${status === 'idle' ? 'opacity-30 pointer-events-none' : 'opacity-100'}`}>
+            <h2 className="text-lg font-bold flex items-center gap-2 text-slate-500 uppercase tracking-widest">
+              <span className="bg-emerald-600 text-white w-6 h-6 rounded-full flex items-center justify-center text-xs">2</span>
+              Configurar Operación
             </h2>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-50 p-6 rounded-3xl border border-slate-200">
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">Tipo de Ajuste</label>
-                <div className="flex p-1 bg-slate-200 rounded-2xl">
+              <div className="space-y-3">
+                <label className="text-xs font-black text-slate-400 uppercase">Tipo de Ajuste</label>
+                <div className="flex p-1 bg-slate-200 rounded-xl">
                   <button 
                     onClick={() => setOperation('increase')}
-                    className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-bold transition-all ${operation === 'increase' ? 'bg-white shadow-lg text-indigo-600' : 'text-slate-500'}`}
+                    className={`flex-1 py-3 px-4 rounded-lg flex items-center justify-center gap-2 font-bold transition-all ${operation === 'increase' ? 'bg-white shadow-md text-emerald-600' : 'text-slate-500 hover:text-slate-700'}`}
                   >
-                    <ArrowUpRight className="w-4 h-4" /> Subida
+                    <ArrowUpRight className="w-4 h-4" /> Incremento
                   </button>
                   <button 
                     onClick={() => setOperation('decrease')}
-                    className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-bold transition-all ${operation === 'decrease' ? 'bg-white shadow-lg text-rose-600' : 'text-slate-500'}`}
+                    className={`flex-1 py-3 px-4 rounded-lg flex items-center justify-center gap-2 font-bold transition-all ${operation === 'decrease' ? 'bg-white shadow-md text-rose-600' : 'text-slate-500 hover:text-slate-700'}`}
                   >
-                    <ArrowDownRight className="w-4 h-4" /> Rebaja
+                    <ArrowDownRight className="w-4 h-4" /> Descuento
                   </button>
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <label className="text-[10px] font-bold text-slate-500 uppercase ml-1">Porcentaje</label>
+              <div className="space-y-3">
+                <label className="text-xs font-black text-slate-400 uppercase">Porcentaje (%)</label>
                 <div className="relative">
                   <input
                     type="number"
                     value={percentage}
                     onChange={(e) => setPercentage(e.target.value)}
-                    className="w-full bg-white border-2 border-slate-200 rounded-2xl py-3 pl-5 pr-12 text-2xl font-black focus:border-indigo-500 outline-none transition-all shadow-sm"
+                    className="w-full bg-white border-2 border-slate-200 rounded-xl py-3 pl-4 pr-12 text-xl font-bold focus:border-emerald-500 outline-none transition-all"
                   />
-                  <div className="absolute right-5 top-1/2 -translate-y-1/2 text-slate-300 font-black text-xl">%</div>
+                  <Percent className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300" />
                 </div>
               </div>
 
               <button
                 onClick={applyPricing}
-                disabled={isProcessing || detection.colIndex === -1}
-                className={`md:col-span-2 w-full font-black py-5 rounded-2xl shadow-xl transition-all active:scale-95 flex items-center justify-center gap-3 tracking-[0.1em] ${isProcessing ? 'bg-slate-400' : 'bg-indigo-600 hover:bg-indigo-700 text-white'}`}
+                disabled={isProcessing}
+                className="md:col-span-2 w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black py-4 rounded-xl shadow-xl shadow-emerald-100 flex items-center justify-center gap-3 transition-all active:scale-[0.98]"
               >
-                {isProcessing ? <RefreshCw className="animate-spin" /> : <Search className="w-5 h-5" />}
-                {isProcessing ? "PROCESANDO FILAS..." : "CALCULAR NUEVOS PRECIOS"}
+                {isProcessing ? "PROCESANDO..." : "APLICAR CÁLCULO A PRECIOS"}
               </button>
             </div>
           </section>
 
-          {/* Paso 3: Descarga */}
-          <section className={`transition-all duration-500 ${status !== 'processed' ? 'opacity-0 scale-95 pointer-events-none h-0' : 'opacity-100 scale-100 h-auto mt-6'}`}>
-            <div className="bg-teal-600 rounded-3xl p-8 text-white flex flex-col md:flex-row items-center justify-between gap-6 shadow-2xl shadow-teal-100 border-b-4 border-teal-800">
-              <div className="flex items-center gap-4">
-                <div className="bg-white/20 p-4 rounded-2xl">
-                  <CheckCircle2 className="w-8 h-8" />
+          {/* PASO 3: EXPORTACIÓN */}
+          <section className={`transition-all ${status !== 'processed' ? 'opacity-30 pointer-events-none' : 'opacity-100'}`}>
+             <div className="bg-slate-900 rounded-3xl p-8 text-white flex flex-col md:flex-row items-center justify-between gap-6">
+                <div className="flex items-center gap-4">
+                   <div className="bg-emerald-500/20 p-4 rounded-full border border-emerald-500/30">
+                      <CheckCircle2 className="w-8 h-8 text-emerald-400" />
+                   </div>
+                   <div>
+                      <p className="text-xl font-bold">¡Cálculo verificado!</p>
+                      <p className="text-slate-400 text-sm">Los precios han sido recalculados con éxito.</p>
+                   </div>
                 </div>
-                <div>
-                  <h3 className="text-xl font-black tracking-tight">¡Proceso Terminado!</h3>
-                  <p className="opacity-80 text-sm">Ya puedes descargar tu archivo actualizado.</p>
-                </div>
-              </div>
-              <button
-                onClick={downloadExcel}
-                className="w-full md:w-auto bg-white text-teal-700 font-black py-4 px-10 rounded-2xl flex items-center justify-center gap-3 hover:bg-teal-50 transition-colors shadow-lg"
-              >
-                <Download className="w-5 h-5" />
-                DESCARGAR .XLSX
-              </button>
-            </div>
+                <button
+                  onClick={downloadExcel}
+                  className="bg-white text-slate-900 font-black py-4 px-10 rounded-2xl flex items-center gap-3 hover:bg-emerald-50 transition-colors"
+                >
+                  <Download className="w-5 h-5 text-emerald-600" />
+                  DESCARGAR RESULTADO
+                </button>
+             </div>
           </section>
 
-          {/* Preview Simple */}
-          {status !== 'idle' && status !== 'loading' && (
-            <div className="mt-8">
-              <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
-                <FileText className="w-3 h-3" /> Previsualización rápida
-              </h3>
-              <div className="overflow-x-auto border border-slate-100 rounded-2xl bg-white shadow-inner">
-                <table className="w-full text-[11px] text-left">
-                  <thead>
-                    <tr className="bg-slate-50 text-slate-500 font-bold border-b border-slate-100">
-                      {displayData[detection.rowIndex]?.slice(0, 5).map((h, i) => (
-                        <th key={i} className={`px-4 py-3 ${i === detection.colIndex ? 'bg-indigo-50 text-indigo-700 font-black' : ''}`}>{h || '-'}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50">
-                    {displayData.slice(detection.rowIndex + 1, detection.rowIndex + 6).map((row, i) => (
-                      <tr key={i}>
-                        {row.slice(0, 5).map((cell, j) => (
-                          <td key={j} className={`px-4 py-3 text-slate-600 ${j === detection.colIndex ? 'font-bold text-indigo-600' : ''}`}>
-                            {cell}
-                          </td>
+          {/* Preview */}
+          {status !== 'idle' && (
+            <div className="pt-6 border-t border-slate-100">
+               <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Vista previa (Primeras 5 filas)</h3>
+               <div className="overflow-hidden border border-slate-100 rounded-2xl">
+                  <table className="w-full text-xs text-left">
+                    <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-100">
+                      <tr>
+                        {displayData[0]?.slice(0, 5).map((h, i) => (
+                          <th key={i} className="px-4 py-3">{h}</th>
                         ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {displayData.slice(1, 6).map((row, i) => (
+                        <tr key={i}>
+                          {row.slice(0, 5).map((cell, j) => (
+                            <td key={j} className="px-4 py-3 text-slate-600">{cell}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+               </div>
             </div>
           )}
         </div>
+      </div>
 
-        {/* Footer */}
-        <div className="bg-slate-50 p-8 border-t border-slate-100 flex gap-4 text-xs text-slate-400">
-          <AlertCircle className="w-5 h-5 text-slate-300 shrink-0" />
-          <p>
-            Esta versión está optimizada para <strong>GitHub</strong>. Utiliza una carga asíncrona de las librerías de Excel para evitar errores de compilación y asegurar que el "Precio normal" se procese incluso si el archivo tiene formatos de moneda complejos.
-          </p>
+      <div className="max-w-4xl mx-auto mt-8 flex gap-4 p-6 bg-white/50 backdrop-blur rounded-2xl border border-white">
+        <AlertCircle className="w-5 h-5 text-amber-500 shrink-0" />
+        <div className="text-xs text-slate-500 leading-relaxed">
+          <p className="font-bold text-slate-700 mb-1">Nota sobre la precisión:</p>
+          Esta versión 2.0 limpia cualquier carácter no numérico de la columna de precios y utiliza una base de datos "espejo". Esto garantiza que si cambias el porcentaje de 10% a 20%, el cálculo se haga sobre el precio real de tu archivo y no sobre el precio ya incrementado anteriormente.
         </div>
       </div>
     </div>
